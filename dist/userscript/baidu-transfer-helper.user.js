@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         百度网盘批量转存助手（跨浏览器版）
 // @namespace    https://github.com/kola-official/baidu-transfer-helper
-// @version      1.0.0
+// @version      1.0.1
 // @description  自动递归拆分并转存超过数量限制的百度网盘分享目录
 // @match        https://pan.baidu.com/*
 // @grant        none
