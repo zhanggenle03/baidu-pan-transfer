@@ -1,0 +1,23 @@
+{
+  "name": "baidu-transfer-helper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm run test && npm run build",
+    "package": "npm run test && sh scripts/package.sh"
+  },
+  "description": "完全开源的百度网盘批量转存助手，支持 Chromium、Firefox 和油猴脚本。",
+  "author": "kola-official",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kola-official/baidu-transfer-helper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kola-official/baidu-transfer-helper/issues"
+  },
+  "homepage": "https://github.com/kola-official/baidu-transfer-helper#readme"
+}

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>百度网盘批量转存</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header><div class="logo">盘</div><div><h1>百度网盘批量转存</h1><p>自动拆分超过数量限制的目录</p></div></header>
+    <label>分享链接<textarea id="url" rows="3" placeholder="https://pan.baidu.com/s/1..."></textarea></label>
+    <div class="row">
+      <label>提取码<input id="password" maxlength="8" placeholder="没有可留空"></label>
+      <label>保存目录<input id="destination" placeholder="/ 或 /资料"></label>
+    </div>
+    <div id="login" class="notice hidden">未检测到百度账号登录状态，请先<a href="https://pan.baidu.com/" target="_blank">登录百度网盘</a>。</div>
+    <button id="start">开始转存</button>
+    <section id="status" class="status hidden"><strong id="statusText"></strong><div id="log"></div></section>
+    <footer>数据只在浏览器本地处理；请勿同时运行多个转存任务。</footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
