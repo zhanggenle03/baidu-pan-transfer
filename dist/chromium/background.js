@@ -316,6 +316,23 @@ const hasBrowserNamespace = typeof globalThis.browser !== "undefined";
 const ext = globalThis.browser || globalThis.chrome;
 const { BaiduPanTransfer } = globalThis.BaiduTransferCore;
 let running = false;
+let keepAliveTimer = null;
+
+// A transfer can pause for up to 30s while waiting out a Baidu rate limit.
+// A pending timer does not keep an MV3 service worker alive, so ping a
+// lightweight extension API periodically to reset the idle-termination timer.
+function startKeepAlive() {
+  if (keepAliveTimer) return;
+  keepAliveTimer = setInterval(() => {
+    call(ext.runtime, "getPlatformInfo").catch(() => {});
+  }, 20000);
+}
+
+function stopKeepAlive() {
+  if (!keepAliveTimer) return;
+  clearInterval(keepAliveTimer);
+  keepAliveTimer = null;
+}
 
 function call(api, method, ...args) {
   if (hasBrowserNamespace) return Promise.resolve(api[method](...args));
@@ -354,6 +371,7 @@ async function report(message) {
 async function startTransfer({ url, password, destination }) {
   if (running) throw new Error("已有转存任务正在运行");
   running = true;
+  startKeepAlive();
   let progressQueue = Promise.resolve();
   try {
     await setState({ status: "running", message: "准备开始…", log: [], startedAt: Date.now(), updatedAt: Date.now() });
@@ -371,6 +389,7 @@ async function startTransfer({ url, password, destination }) {
     await broadcast({ type: "TRANSFER_ERROR", error: error.message });
   } finally {
     running = false;
+    stopKeepAlive();
   }
 }
 
