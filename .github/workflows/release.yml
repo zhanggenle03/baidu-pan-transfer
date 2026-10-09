@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布标签，留空则使用 v + package.json 中的版本
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test, build and package
+        run: npm run package
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          fi
+          if [ -z "$TAG" ]; then
+            TAG="v$(node -p "require('./package.json').version")"
+          fi
+          case "$TAG" in v*) ;; *) TAG="v${TAG}" ;; esac
+          echo "发布标签：$TAG"
+
+          ASSETS="dist/baidu-transfer-helper-chromium.zip dist/baidu-transfer-helper-firefox.xpi dist/userscript/baidu-transfer-helper.user.js dist/SHA256SUMS.txt"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "标签已存在，覆盖上传资产"
+            gh release upload "$TAG" --clobber $ASSETS
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes $ASSETS
+          fi

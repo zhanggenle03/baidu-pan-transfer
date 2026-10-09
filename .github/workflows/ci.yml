@@ -18,20 +18,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # 本工作流只做校验，不上传产物。
+      # Actions artifact 在下载时会被 GitHub 再包一层 zip，拿不到可直接安装的裸文件；
+      # 需要下载产物请运行 Release 工作流，或推送 v* 标签。
       - name: Test, build and package
         run: npm run package
-      - name: Upload userscript
-        uses: actions/upload-artifact@v4
-        with:
-          name: baidu-transfer-helper-userscript
-          path: dist/userscript/baidu-transfer-helper.user.js
-      - name: Upload Chromium extension
-        uses: actions/upload-artifact@v4
-        with:
-          name: baidu-transfer-helper-chromium
-          path: dist/baidu-transfer-helper-chromium.zip
-      - name: Upload Firefox extension
-        uses: actions/upload-artifact@v4
-        with:
-          name: baidu-transfer-helper-firefox
-          path: dist/baidu-transfer-helper-firefox.xpi
