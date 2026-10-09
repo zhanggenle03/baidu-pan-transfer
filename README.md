@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue.svg)](dist/chromium/manifest.json)
-[![GitHub release](https://img.shields.io/github/v/release/kola-official/baidu-transfer-helper)](https://github.com/kola-official/baidu-transfer-helper/releases)
+[![GitHub release](https://img.shields.io/github/v/release/zhanggenle03/baidu-pan-transfer)](https://github.com/zhanggenle03/baidu-pan-transfer/releases)
 
 一个完全开源、无第三方服务器的百度网盘批量转存工具。当非会员遇到单次文件数量限制时，工具会递归展开超大目录并自动分批转存。
 
