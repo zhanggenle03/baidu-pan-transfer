@@ -56,7 +56,7 @@ async function report(message) {
   await broadcast({ type: "TRANSFER_PROGRESS", message });
 }
 
-async function startTransfer({ url, password, destination }) {
+async function startTransfer({ url, password, destination, maxFilesPerFolder, folderPrefix }) {
   if (running) throw new Error("已有转存任务正在运行");
   running = true;
   startKeepAlive();
@@ -65,6 +65,8 @@ async function startTransfer({ url, password, destination }) {
     await setState({ status: "running", message: "准备开始…", log: [], startedAt: Date.now(), updatedAt: Date.now() });
     const transfer = new BaiduPanTransfer({
       destination,
+      maxFilesPerFolder,
+      folderPrefix,
       onProgress: (message) => { progressQueue = progressQueue.then(() => report(message)); }
     });
     const result = await transfer.run(url, password);

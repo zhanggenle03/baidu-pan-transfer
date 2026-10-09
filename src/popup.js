@@ -2,7 +2,13 @@
 const hasBrowserNamespace = typeof globalThis.browser !== "undefined";
 const ext = globalThis.browser || globalThis.chrome;
 const $ = (selector) => document.querySelector(selector);
-const fields = { url: $("#url"), password: $("#password"), destination: $("#destination") };
+const fields = {
+  url: $("#url"),
+  password: $("#password"),
+  destination: $("#destination"),
+  maxFiles: $("#maxFiles"),
+  prefix: $("#prefix")
+};
 
 function extCall(api, method, ...args) {
   if (hasBrowserNamespace) return Promise.resolve(api[method](...args));
@@ -18,15 +24,19 @@ function extCall(api, method, ...args) {
 
 async function restoreForm() {
   const data = await extCall(ext.storage.local, "get", ["transferForm", "transferState"]);
-  Object.assign(fields.url, { value: data.transferForm?.url || "" });
-  Object.assign(fields.password, { value: data.transferForm?.password || "" });
-  Object.assign(fields.destination, { value: data.transferForm?.destination || "" });
+  const form = data.transferForm || {};
+  fields.url.value = form.url || "";
+  fields.password.value = form.password || "";
+  fields.destination.value = form.destination || "";
+  fields.maxFiles.value = form.maxFiles || "";
+  fields.prefix.value = form.prefix || "";
   renderState(data.transferState || {});
 }
 
 async function saveForm() {
   await extCall(ext.storage.local, "set", { transferForm: {
-    url: fields.url.value.trim(), password: fields.password.value.trim(), destination: fields.destination.value.trim()
+    url: fields.url.value.trim(), password: fields.password.value.trim(), destination: fields.destination.value.trim(),
+    maxFiles: fields.maxFiles.value.trim(), prefix: fields.prefix.value.trim()
   }});
 }
 
@@ -53,7 +63,9 @@ $("#start").addEventListener("click", async () => {
   $("#start").disabled = true;
   try {
     await extCall(ext.runtime, "sendMessage", { type: "START_TRANSFER", payload: {
-      url: fields.url.value.trim(), password: fields.password.value.trim(), destination: fields.destination.value.trim()
+      url: fields.url.value.trim(), password: fields.password.value.trim(), destination: fields.destination.value.trim(),
+      maxFilesPerFolder: Math.max(0, Math.floor(Number(fields.maxFiles.value) || 0)),
+      folderPrefix: fields.prefix.value.trim()
     }});
   } catch (error) {
     renderState({ status: "error", message: error.message });
