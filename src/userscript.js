@@ -46,8 +46,11 @@
   const startButton = byId("bpth-start");
   const status = byId("bpth-status");
   const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-  urlInput.value = saved.url || (/\/s\/1/.test(location.href) ? location.href : "");
-  passwordInput.value = saved.password || new URL(location.href).searchParams.get("pwd") || "";
+  // 当前页就是分享页时以它为准（历史记录只作为回退），否则自动填充会被旧链接一直压住
+  const pageShareLink = /\/s\/1|surl=/.test(location.href) ? location.href : "";
+  const pagePwd = pageShareLink ? new URL(location.href).searchParams.get("pwd") || "" : "";
+  urlInput.value = pageShareLink || saved.url || "";
+  passwordInput.value = pagePwd || saved.password || "";
   destinationInput.value = saved.destination || "";
   maxFilesInput.value = saved.maxFiles || "";
   prefixInput.value = saved.prefix || "";

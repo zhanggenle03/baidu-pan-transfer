@@ -22,6 +22,28 @@ function extCall(api, method, ...args) {
   });
 }
 
+// 从活动标签页取出百度网盘分享链接（非分享页返回空）。
+// 不需要 tabs 权限：host_permissions 已覆盖 baidu.com，tab.url 才可读；
+// 其他站点的标签页读不到 url，返回空字符串，保持表单原值。
+function shareLinkFromTab(tab) {
+  const url = tab?.url || tab?.pendingUrl || "";
+  if (!/^https:\/\/pan\.baidu\.com\//i.test(url)) return "";
+  return /\/s\/1|surl=/i.test(url) ? url : "";
+}
+
+async function prefillFromActiveTab() {
+  const tabs = await extCall(ext.tabs, "query", { active: true, currentWindow: true }).catch(() => null);
+  const shareUrl = shareLinkFromTab(tabs && tabs[0]);
+  if (!shareUrl) return;
+  fields.url.value = shareUrl;
+  if (!fields.password.value) {
+    const pwd = shareUrl.match(/[?&]pwd=([^&#\s]+)/i);
+    if (pwd) {
+      try { fields.password.value = decodeURIComponent(pwd[1]); } catch (_) { fields.password.value = pwd[1]; }
+    }
+  }
+}
+
 async function restoreForm() {
   const data = await extCall(ext.storage.local, "get", ["transferForm", "transferState"]);
   const form = data.transferForm || {};
@@ -31,6 +53,7 @@ async function restoreForm() {
   fields.maxFiles.value = form.maxFiles || "";
   fields.prefix.value = form.prefix || "";
   renderState(data.transferState || {});
+  await prefillFromActiveTab();
 }
 
 async function saveForm() {
