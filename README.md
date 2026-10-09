@@ -116,6 +116,18 @@ dist/userscript/baidu-transfer-helper.user.js
 npm run package
 ```
 
+## 持续集成与发布
+
+仓库包含两个 GitHub Actions 工作流：
+
+- **CI**（`.github/workflows/ci.yml`）：在 push 和 PR 时执行测试、构建与打包校验，也可以手动触发；**不产出下载文件**。
+- **Release**（`.github/workflows/release.yml`）：推送 `v*` 标签或手动触发，自动创建 GitHub Release，并把
+  `baidu-transfer-helper-chromium.zip`、`baidu-transfer-helper-firefox.xpi`、
+  `baidu-transfer-helper.user.js` 与 `SHA256SUMS.txt` 作为**原始文件**上传。
+
+> 下载产物请走 Release，不要用 Actions 的 Artifacts：GitHub 会把 artifact 再包一层 zip，
+> 会导致下载到「压缩包里面还是压缩包」，且无法得到可直接安装的 `.user.js`。
+
 ## 项目结构
 
 ```text
