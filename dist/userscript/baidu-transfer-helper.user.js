@@ -531,7 +531,8 @@
   const pageShareLink = /\/s\/1|surl=/.test(location.href) ? location.href : "";
   const pagePwd = pageShareLink ? new URL(location.href).searchParams.get("pwd") || "" : "";
   urlInput.value = pageShareLink || saved.url || "";
-  passwordInput.value = pagePwd || saved.password || "";
+  // 提取码以当前分享页为准：本页 URL 没有 pwd 参数就留空，绝不沿用上一次分享的提取码
+  passwordInput.value = pageShareLink ? pagePwd : saved.password || "";
   destinationInput.value = saved.destination || "";
   maxFilesInput.value = saved.maxFiles || "";
   prefixInput.value = saved.prefix || "";
