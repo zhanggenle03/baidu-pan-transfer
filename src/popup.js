@@ -31,16 +31,34 @@ function shareLinkFromTab(tab) {
   return /\/s\/1|surl=/i.test(url) ? url : "";
 }
 
+// 找当前活动标签页。currentWindow 在弹窗上下文中偶尔取不到，再用 lastFocusedWindow 兜底；
+// 失败时输出警告而不是静默吞掉，避免「读不到标签页」被误当成「本页不是分享页」。
+async function queryActiveTab() {
+  for (const query of [{ active: true, currentWindow: true }, { active: true, lastFocusedWindow: true }]) {
+    try {
+      const tabs = await extCall(ext.tabs, "query", query);
+      if (tabs && tabs.length) return tabs[0];
+    } catch (error) {
+      console.warn("[百度网盘批量转存] 读取活动标签页失败：", error);
+    }
+  }
+  return null;
+}
+
 async function prefillFromActiveTab() {
-  const tabs = await extCall(ext.tabs, "query", { active: true, currentWindow: true }).catch(() => null);
-  const shareUrl = shareLinkFromTab(tabs && tabs[0]);
+  const shareUrl = shareLinkFromTab(await queryActiveTab());
   if (!shareUrl) return;
   fields.url.value = shareUrl;
-  if (!fields.password.value) {
-    const pwd = shareUrl.match(/[?&]pwd=([^&#\s]+)/i);
-    if (pwd) {
-      try { fields.password.value = decodeURIComponent(pwd[1]); } catch (_) { fields.password.value = pwd[1]; }
-    }
+  // 提取码以当前分享页为准：URL 里没有 pwd 就置空，绝不沿用上一次分享的提取码
+  const pwd = shareUrl.match(/[?&]pwd=([^&#\s]+)/i);
+  if (!pwd) {
+    fields.password.value = "";
+    return;
+  }
+  try {
+    fields.password.value = decodeURIComponent(pwd[1]);
+  } catch (_) {
+    fields.password.value = pwd[1];
   }
 }
 
