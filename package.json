@@ -1,6 +1,6 @@
 {
   "name": "baidu-transfer-helper",
-  "version": "1.0.1",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "check": "npm run test && npm run build",
     "package": "npm run test && sh scripts/package.sh"
   },
-  "description": "完全开源的百度网盘批量转存助手，支持 Chromium、Firefox 和油猴脚本。",
+  "description": "完全开源的百度网盘批量转存助手，支持 Chromium、Firefox 和油猴脚本，可自定义每个文件夹保存的文件数量。",
   "author": "kola-official",
   "license": "MIT",
   "repository": {
