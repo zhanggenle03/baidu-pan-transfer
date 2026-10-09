@@ -11,17 +11,27 @@ permissions:
   contents: read
 
 jobs:
-  test-and-build:
+  test-and-package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Test and build
-        run: npm run check
-      - name: Upload build artifacts
+      - name: Test, build and package
+        run: npm run package
+      - name: Upload userscript
         uses: actions/upload-artifact@v4
         with:
-          name: baidu-transfer-helper-dist
-          path: dist/
+          name: baidu-transfer-helper-userscript
+          path: dist/userscript/baidu-transfer-helper.user.js
+      - name: Upload Chromium extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: baidu-transfer-helper-chromium
+          path: dist/baidu-transfer-helper-chromium.zip
+      - name: Upload Firefox extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: baidu-transfer-helper-firefox
+          path: dist/baidu-transfer-helper-firefox.xpi
