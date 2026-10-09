@@ -14,6 +14,11 @@
       <label>提取码<input id="password" maxlength="8" placeholder="没有可留空"></label>
       <label>保存目录<input id="destination" placeholder="/ 或 /资料"></label>
     </div>
+    <div class="row">
+      <label>每夹最多文件数<input id="maxFiles" type="number" min="0" step="1" placeholder="0 = 不限制"></label>
+      <label>分批文件夹前缀<input id="prefix" maxlength="20" placeholder="留空则为 1、2、3"></label>
+    </div>
+    <p class="hint">每夹最多文件数设为 0 时沿用百度原有自动拆分逻辑；设为大于 0 时，超出部分会拆分到子文件夹，名称为「前缀 + 序号」拼接（填「批」得到 批1、批2，留空得到 1、2），目录内部同样按此上限拆分。</p>
     <div id="login" class="notice hidden">未检测到百度账号登录状态，请先<a href="https://pan.baidu.com/" target="_blank">登录百度网盘</a>。</div>
     <button id="start">开始转存</button>
     <section id="status" class="status hidden"><strong id="statusText"></strong><div id="log"></div></section>
