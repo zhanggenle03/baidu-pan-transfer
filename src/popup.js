@@ -50,11 +50,43 @@ function renderState(state) {
   $("#start").textContent = state.status === "running" ? "正在后台转存…" : "开始转存";
 }
 
+// BDUSS 位于父域 .baidu.com，只有 host_permissions 覆盖 baidu.com 才能读到，
+// 因此 manifest 中除了 pan.baidu.com 还声明了 baidu.com / *.baidu.com。
+const COOKIE_FILTERS = [{ domain: ".baidu.com" }, { url: "https://pan.baidu.com/" }];
+
+// 返回 Cookie 数组；若两种过滤方式都失败则返回 null 表示「无法判定」
+async function readBaiduCookies() {
+  const results = await Promise.all(
+    COOKIE_FILTERS.map((filter) => extCall(ext.cookies, "getAll", filter).catch(() => null))
+  );
+  if (!results.some((list) => Array.isArray(list))) return null;
+  const seen = new Set();
+  const cookies = [];
+  for (const list of results) {
+    for (const cookie of list || []) {
+      const key = `${cookie.domain}|${cookie.name}|${cookie.path}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cookies.push(cookie);
+    }
+  }
+  return cookies;
+}
+
 async function checkLogin() {
   try {
-    const cookies = await extCall(ext.cookies, "getAll", { domain: ".baidu.com" });
-    $("#login").classList.toggle("hidden", cookies.some((cookie) => cookie.name.includes("BDUSS")));
-  } catch (_) {}
+    const cookies = await readBaiduCookies();
+    if (cookies) {
+      // Cookie 是权威信号：BDUSS 存在即已登录，不存在即未登录
+      $("#login").classList.toggle("hidden", cookies.some((cookie) => cookie.name.includes("BDUSS")));
+      return;
+    }
+    // 读不到 Cookie 时才退回后台接口探测，且只在明确未登录时提示
+    const result = await extCall(ext.runtime, "sendMessage", { type: "CHECK_LOGIN" });
+    $("#login").classList.toggle("hidden", result?.value !== "no");
+  } catch (_) {
+    $("#login").classList.add("hidden");
+  }
 }
 
 $("#start").addEventListener("click", async () => {

@@ -15,7 +15,7 @@ const commonManifest = {
   action: { default_popup: "popup.html", default_title: "百度网盘批量转存" },
   icons: { 16: "icons/icon16.png", 32: "icons/icon32.png", 48: "icons/icon48.png", 128: "icons/icon128.png" },
   permissions: ["storage", "cookies", "declarativeNetRequestWithHostAccess"],
-  host_permissions: ["https://pan.baidu.com/*"]
+  host_permissions: ["https://pan.baidu.com/*", "*://baidu.com/*", "*://*.baidu.com/*"]
 };
 
 const manifests = {

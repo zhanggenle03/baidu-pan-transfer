@@ -56,6 +56,21 @@ async function report(message) {
   await broadcast({ type: "TRANSFER_PROGRESS", message });
 }
 
+// 读出 Cookie 时的兜底探测：直接请求百度接口判断登录态，返回 yes / no / unknown。
+// 注意「用 cookies.getAll 读不到 BDUSS」不是接口的问题，而是 host 权限未覆盖 baidu.com，
+// 该情况已在 manifest 中修正，这里只作为 Cookie API 不可用时的备用路径，因此不做缓存（避免退出登录后仍报已登录）。
+async function detectLogin() {
+  try {
+    await new BaiduPanTransfer({}).getBdstoken();
+    return "yes";
+  } catch (error) {
+    if (error && (error.errno === -6 || /未登录|未检测到百度网盘登录状态/.test(error.message || ""))) {
+      return "no";
+    }
+    return "unknown";
+  }
+}
+
 async function startTransfer({ url, password, destination, maxFilesPerFolder, folderPrefix }) {
   if (running) throw new Error("已有转存任务正在运行");
   running = true;
@@ -127,6 +142,15 @@ ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (hasBrowserNamespace) return Promise.resolve(response);
     sendResponse(response);
     return false;
+  }
+  if (message?.type === "CHECK_LOGIN") {
+    const promise = detectLogin().then(
+      (value) => ({ ok: true, value }),
+      (error) => ({ ok: false, error: error.message })
+    );
+    if (hasBrowserNamespace) return promise;
+    promise.then(sendResponse);
+    return true;
   }
   if (message?.type === "GET_STATE") {
     const promise = getState().then(
