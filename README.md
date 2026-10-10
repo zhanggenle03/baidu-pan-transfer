@@ -30,7 +30,7 @@
 
 ## 下载
 
-建议从 [GitHub Releases](https://github.com/kola-official/baidu-transfer-helper/releases/latest) 下载最新版本：
+建议从 [GitHub Releases](https://github.com/zhanggenle03/baidu-pan-transfer/releases/latest) 下载最新版本：
 
 | 平台 | 下载文件 |
 |---|---|
