@@ -5,6 +5,7 @@ const ext = globalThis.browser || globalThis.chrome;
 const { BaiduPanTransfer } = globalThis.BaiduTransferCore;
 let running = false;
 let keepAliveTimer = null;
+let currentTransfer = null;
 
 // A transfer can pause for up to 30s while waiting out a Baidu rate limit.
 // A pending timer does not keep an MV3 service worker alive, so ping a
@@ -71,7 +72,35 @@ async function detectLogin() {
   }
 }
 
-async function startTransfer({ url, password, destination, maxFilesPerFolder, folderPrefix }) {
+// 分享读取会话：展开子目录时复用已加载的分享状态，避免重复读取分享页
+let shareSession = null;
+
+async function getShareSession(url, password) {
+  if (shareSession && shareSession.url === url && shareSession.password === password) return shareSession.transfer;
+  const transfer = new BaiduPanTransfer({});
+  await transfer.loadShare(url, password);
+  shareSession = { transfer, url, password };
+  return transfer;
+}
+
+// 读取分享清单，供弹窗勾选（只读，不转存）；传入 dir 时读取该目录的子项
+async function readShare(url, password, dir) {
+  const transfer = await getShareSession(url, password);
+  if (dir) {
+    const children = await transfer.listShareChildren(dir.relative || "", dir.name, dir.path || "");
+    return {
+      items: children.map((item) => ({ id: Number(item.id), name: item.name, isDirectory: item.isDirectory, path: item.path || "" }))
+    };
+  }
+  return {
+    items: [
+      ...transfer.directories.map((item) => ({ id: Number(item.id), name: item.name, isDirectory: true, path: item.path || "", size: Number(item.size) || 0 })),
+      ...transfer.files.map((item) => ({ id: Number(item.id), name: item.name, isDirectory: false, path: item.path || "", size: Number(item.size) || 0 }))
+    ]
+  };
+}
+
+async function startTransfer({ url, password, destination, maxFilesPerFolder, folderPrefix, selection }) {
   if (running) throw new Error("已有转存任务正在运行");
   running = true;
   startKeepAlive();
@@ -82,18 +111,26 @@ async function startTransfer({ url, password, destination, maxFilesPerFolder, fo
       destination,
       maxFilesPerFolder,
       folderPrefix,
+      selection,
       onProgress: (message) => { progressQueue = progressQueue.then(() => report(message)); }
     });
+    currentTransfer = transfer;
     const result = await transfer.run(url, password);
     await progressQueue;
     await setState({ status: "complete", message: "全部转存完成", result, updatedAt: Date.now() });
     await broadcast({ type: "TRANSFER_COMPLETE", result });
   } catch (error) {
     await progressQueue.catch(() => {});
-    await setState({ status: "error", message: error.message, error: error.message, updatedAt: Date.now() });
-    await broadcast({ type: "TRANSFER_ERROR", error: error.message });
+    if (error && error.name === "TransferCancelledError") {
+      await setState({ status: "cancelled", message: "已取消", updatedAt: Date.now() });
+      await broadcast({ type: "TRANSFER_CANCELLED" });
+    } else {
+      await setState({ status: "error", message: error.message, error: error.message, updatedAt: Date.now() });
+      await broadcast({ type: "TRANSFER_ERROR", error: error.message });
+    }
   } finally {
     running = false;
+    currentTransfer = null;
     stopKeepAlive();
   }
 }
@@ -142,6 +179,24 @@ ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (hasBrowserNamespace) return Promise.resolve(response);
     sendResponse(response);
     return false;
+  }
+  if (message?.type === "CANCEL_TRANSFER") {
+    const cancelled = Boolean(currentTransfer);
+    if (cancelled) currentTransfer.cancel();
+    const response = cancelled ? { ok: true } : { ok: false, error: "没有正在运行的转存任务" };
+    if (hasBrowserNamespace) return Promise.resolve(response);
+    sendResponse(response);
+    return false;
+  }
+  if (message?.type === "READ_SHARE") {
+    const payload = message.payload || {};
+    const promise = readShare(payload.url || "", payload.password || "", payload.dir || null).then(
+      (value) => ({ ok: true, value }),
+      (error) => ({ ok: false, error: error.message })
+    );
+    if (hasBrowserNamespace) return promise;
+    promise.then(sendResponse);
+    return true;
   }
   if (message?.type === "CHECK_LOGIN") {
     const promise = detectLogin().then(

@@ -8,21 +8,59 @@
 </head>
 <body>
   <main>
-    <header><div class="logo">盘</div><div><h1>百度网盘批量转存</h1><p>自动拆分超过数量限制的目录</p></div></header>
-    <label>分享链接<textarea id="url" rows="3" placeholder="https://pan.baidu.com/s/1..."></textarea></label>
-    <div class="row">
-      <label>提取码<input id="password" maxlength="8" placeholder="没有可留空"></label>
-      <label>保存目录<input id="destination" placeholder="/ 或 /资料"></label>
+    <header>
+      <div class="logo">盘</div>
+      <div class="head-text">
+        <h1>百度网盘批量转存</h1>
+        <p>自动拆分超过数量限制的目录，支持按文件夹勾选</p>
+      </div>
+    </header>
+    <div class="board">
+      <section class="card card-form">
+        <h2 class="card-title">转存设置</h2>
+        <label>分享链接<textarea id="url" rows="2" placeholder="https://pan.baidu.com/s/1..."></textarea></label>
+        <div class="row">
+          <label>提取码<input id="password" maxlength="8" placeholder="没有可留空"></label>
+          <label>保存目录<input id="destination" placeholder="/ 或 /资料"></label>
+        </div>
+        <div class="row">
+          <label>每夹最多文件数<input id="maxFiles" type="number" min="0" step="1" placeholder="0 = 不限制"></label>
+          <label>分批文件夹前缀<input id="prefix" maxlength="20" placeholder="留空则为 1、2、3"></label>
+        </div>
+        <details class="tips">
+          <summary>每夹最多文件数怎么填？</summary>
+          <p>· 填 0：不限制，转存速度最快。</p>
+          <p>· 填个数（如 100）：每个文件夹最多存这么多，超出的自动分到新文件夹，名字为「前缀+序号」（填「批」得 批1、批2，留空得 1、2），所有层级的文件夹都按此处理。</p>
+          <p>· 分享中的文件夹总数超过 40 个时，不建议填写——转存前会先扫描所有文件夹，速度明显更慢，还容易触发百度限流。</p>
+        </details>
+        <div id="login" class="notice hidden">未检测到百度账号登录状态，请先<a href="https://pan.baidu.com/" target="_blank">登录百度网盘</a>。</div>
+      </section>
+      <section class="card card-pick">
+        <div class="card-head">
+          <h2 class="card-title">选择转存内容</h2>
+          <button id="read" type="button">读取分享内容</button>
+        </div>
+        <p id="readStatus" class="hint"></p>
+        <div id="pickEmpty" class="pick-empty">
+          <strong>尚未读取分享内容</strong>
+          <span>不读取也可以直接转存全部；<br>读取后可只勾选需要的文件夹或文件。</span>
+        </div>
+        <div id="pickList" class="hidden">
+          <div class="pick-head">
+            <label class="pick-all"><input type="checkbox" id="pickAll" checked>全选</label>
+            <span id="pickCount"></span>
+          </div>
+          <div id="pickItems"></div>
+          <p class="hint">点 ▸ 展开文件夹；勾选文件夹即转存整个文件夹</p>
+        </div>
+      </section>
     </div>
-    <div class="row">
-      <label>每夹最多文件数<input id="maxFiles" type="number" min="0" step="1" placeholder="0 = 不限制"></label>
-      <label>分批文件夹前缀<input id="prefix" maxlength="20" placeholder="留空则为 1、2、3"></label>
-    </div>
-    <p class="hint">每夹最多文件数设为 0 时沿用百度原有自动拆分逻辑；设为大于 0 时，超出部分会拆分到子文件夹，名称为「前缀 + 序号」拼接（填「批」得到 批1、批2，留空得到 1、2），目录内部同样按此上限拆分。</p>
-    <div id="login" class="notice hidden">未检测到百度账号登录状态，请先<a href="https://pan.baidu.com/" target="_blank">登录百度网盘</a>。</div>
-    <button id="start">开始转存</button>
     <section id="status" class="status hidden"><strong id="statusText"></strong><div id="log"></div></section>
-    <footer>数据只在浏览器本地处理；请勿同时运行多个转存任务。</footer>
+    <div class="actions">
+      <button id="start">开始转存</button>
+      <button id="cancel" class="hidden">取消转存</button>
+    </div>
+    <footer>数据只在浏览器本地处理 · 请勿同时运行多个转存任务</footer>
   </main>
   <script src="popup.js"></script>
 </body>
