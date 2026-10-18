@@ -604,3 +604,52 @@ test("deep selection drops items covered by a selected ancestor", async () => {
   assert.deepEqual(ids, [1], "被父目录覆盖的子项应被去掉");
   assert.equal(picked[0].parentRelative, "");
 });
+
+test("share list falls back on -9 and derives child paths from the accepted dir", async () => {
+  const dirs = [];
+  const transfer = new BaiduPanTransfer({
+    fetch: async (url) => {
+      const dir = new URL(url).searchParams.get("dir");
+      dirs.push(dir);
+      if (dir === "/share-root/dir") {
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, list: [
+          { fs_id: 11, server_filename: "a.txt", isdir: 0, path: "/owner/space/dir/a.txt" },
+          { fs_id: 12, server_filename: "sub", isdir: 1, path: "/owner/space/dir/sub" }
+        ]}) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ errno: -9, errmsg: "文件或目录不存在" }) };
+    }
+  });
+  transfer.bdstoken = "t"; transfer.shareId = 1; transfer.userId = 2; transfer.shareRoot = "/share-root";
+  const items = await transfer.listShareChildren("", "dir", "/owner/space/dir");
+  assert.deepEqual(Array.from(items, (item) => item.path), ["/share-root/dir/a.txt", "/share-root/dir/sub"], "子项路径应基于实际可用的 dir 续接");
+  assert.equal(dirs.at(-1), "/share-root/dir", "应在 -9 时继续尝试后续候选");
+});
+
+test("deep share listing chains child paths and uses one request per level", async () => {
+  const tree = {
+    "/share-root/A": [{ fs_id: 2, server_filename: "B", isdir: 1, path: "/owner/A/B" }],
+    "/share-root/A/B": [{ fs_id: 3, server_filename: "C", isdir: 1, path: "/owner/A/B/C" }],
+    "/share-root/A/B/C": [{ fs_id: 4, server_filename: "leaf.txt", isdir: 0, path: "/owner/A/B/C/leaf.txt" }]
+  };
+  const calls = [];
+  const transfer = new BaiduPanTransfer({
+    fetch: async (url) => {
+      const dir = new URL(url).searchParams.get("dir");
+      calls.push(dir);
+      if (!tree[dir]) return { ok: true, text: async () => JSON.stringify({ errno: -9, errmsg: "文件或目录不存在" }) };
+      return { ok: true, text: async () => JSON.stringify({ errno: 0, list: tree[dir] }) };
+    }
+  });
+  transfer.bdstoken = "t"; transfer.shareId = 1; transfer.userId = 2; transfer.shareRoot = "/share-root";
+  const level1 = await transfer.listShareChildren("", "A", "/owner/A");
+  const afterLevel1 = calls.length;
+  const level2 = await transfer.listShareChildren("/A", "B", level1[0].path);
+  const afterLevel2 = calls.length;
+  const level3 = await transfer.listShareChildren("/A/B", "C", level2[0].path);
+  assert.equal(level1[0].path, "/share-root/A/B");
+  assert.equal(level2[0].path, "/share-root/A/B/C");
+  assert.equal(level3[0].path, "/share-root/A/B/C/leaf.txt");
+  assert.equal(afterLevel2 - afterLevel1, 1, "第二层应一次命中，不再试错");
+  assert.equal(calls.length - afterLevel2, 1, "第三层应一次命中，不再试错");
+});

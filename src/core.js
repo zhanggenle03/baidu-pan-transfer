@@ -394,11 +394,14 @@
         }
         const list = data.list;
         for (const item of list) {
+          // 子项路径必须以「本次成功列出的 dir」为基准续接。
+          // 接口返回的 item.path 在部分分享里是分享者空间路径（或相对路径），
+          // 深层直接拿它当 dir 会返回 -9/2，表现为「到一定深度就打不开」。
           result.push({
             id: item.fs_id,
             name: item.server_filename,
             isDirectory: Number(item.isdir) === 1,
-            path: item.path
+            path: `${dirValue}/${item.server_filename}`.replace(/\/+/g, "/")
           });
         }
         if (list.length < 100) return result;
@@ -434,18 +437,25 @@
       return candidates;
     }
 
-    // 依次尝试目录路径候选，取第一个可用的（仅针对「链接出错」errno=2 才换候选）
+    // 这些 errno 都表示「这个路径写法不对」，可以换下一个候选再试；
+    // 其余错误（未登录、限流等）与路径无关，直接抛出，避免白白多发请求。
+    isDirCandidateMiss(error) {
+      return [2, -3, -7, -9].includes(Number(error && error.errno));
+    }
+
+    // 依次尝试目录路径候选，取第一个可用的
     async listShareChildren(relative, name, apiPath) {
       let lastError;
       for (const { value, raw } of this.shareDirCandidates(relative, name, apiPath)) {
         try {
           return await this.listShareDirectory(value, raw);
         } catch (error) {
+          if (!this.isDirCandidateMiss(error)) throw error;
           lastError = error;
-          if (error.errno !== 2) throw error;
         }
       }
-      throw new ShareListError(lastError ? lastError.message : "分享目录列表失败", {
+      const label = String(name || "").slice(0, 40);
+      throw new ShareListError(lastError ? `无法读取目录「${label}」：${lastError.message}` : `无法读取目录「${label}」`, {
         errno: lastError && lastError.errno,
         response: lastError && lastError.response
       });
