@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         百度网盘批量转存助手（跨浏览器版）
 // @namespace    https://github.com/kola-official/baidu-transfer-helper
-// @version      1.1.4
+// @version      1.1.5
 // @description  自动递归拆分并转存超过数量限制的百度网盘分享目录，支持自定义每个文件夹保存的文件数量
 // @match        https://pan.baidu.com/*
 // @grant        none
@@ -24,6 +24,8 @@
       this.name = "BaiduPanError";
       this.errno = options.errno;
       this.response = options.response;
+      // 解析失败时保留页面片段，便于在日志里定位是登录页/验证页还是真的改版
+      this.html = options.html;
     }
   }
 
@@ -73,32 +75,207 @@
     return encodeURIComponent(path).replace(/%2F/gi, "/");
   }
 
-  function parseSharePage(html) {
-    const marker = "locals.mset(";
-    const start = html.indexOf(marker);
-    if (start < 0) {
-      if (/share\/init|请输入提取码|提取码/.test(html)) {
-        throw new BaiduPanError("分享需要提取码，或提取码不正确");
+  // 从 start（指向 JSON 起始字符）向后做括号配平，返回 JSON 结束后的下标。
+  // 早先版本用 indexOf("});") 截断，一旦字符串值里出现 }); 就会截错，这里改为配平扫描。
+  function findJsonEnd(text, start) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (escaped) {
+        escaped = false;
+        continue;
       }
-      throw new BaiduPanError("无法解析分享页，链接可能已失效或百度页面结构已更新");
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (char === "{" || char === "[") depth += 1;
+      else if (char === "}" || char === "]") {
+        depth -= 1;
+        if (depth === 0) return index + 1;
+        if (depth < 0) return -1;
+      }
     }
-    const jsonStart = start + marker.length;
-    const end = html.indexOf("});", jsonStart);
-    if (end < 0) throw new BaiduPanError("分享页数据不完整");
-    let data;
+    return -1;
+  }
+
+  // 收集页面里所有 locals.mset(...) 的数据段：百度会把登录态、分享元信息拆成多段注入，
+  // 取「第一个」并不保险，必须按内容挑。
+  function collectLocalsSegments(html) {
+    const segments = [];
+    const pattern = /locals\.mset\s*\(/g;
+    let match;
+    while ((match = pattern.exec(html))) {
+      const jsonStart = match.index + match[0].length;
+      const end = findJsonEnd(html, jsonStart);
+      if (end < 0) continue;
+      try {
+        const data = JSON.parse(html.slice(jsonStart, end));
+        if (data && typeof data === "object") segments.push(data);
+      } catch (_) {
+        /* 单段解析失败不影响其它段 */
+      }
+      pattern.lastIndex = end;
+    }
+    return segments;
+  }
+
+  // 新版分享页把 shareid / share_uk 放到 window.yunData（JS 对象字面量，非严格 JSON）
+  function parseYunData(html) {
+    const start = html.indexOf("window.yunData");
+    if (start < 0) return null;
+    const braceStart = html.indexOf("{", start);
+    if (braceStart < 0) return null;
+    const end = findJsonEnd(html, braceStart);
+    if (end < 0) return null;
+    const raw = html.slice(braceStart, end);
     try {
-      data = JSON.parse(html.slice(jsonStart, end + 1));
-    } catch (error) {
-      throw new BaiduPanError(`分享页数据解析失败：${error.message}`);
+      return JSON.parse(raw.replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":').replace(/'/g, '"'));
+    } catch (_) {
+      // 新版页面这里只是一段模板（shareid: data.shareid），必须只接受纯数字，
+      // 否则会把占位符当成真实分享标识，后续列表请求必然 404。
+      const pick = (key) => {
+        const found = raw.match(new RegExp(`["']?${key}["']?\\s*:\\s*["']?([^"',}]+)`));
+        const value = found ? found[1].trim() : "";
+        return /^\d+$/.test(value) ? value : "";
+      };
+      return { shareid: pick("shareid"), share_uk: pick("share_uk") };
     }
-    const files = Array.isArray(data.file_list) ? data.file_list : [];
-    if (!data.shareid || !data.share_uk || files.length === 0) {
-      throw new BaiduPanError("分享页没有可转存的文件，或分享已失效");
+  }
+
+  function pageTitle(html) {
+    const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    return match ? match[1].replace(/\s+/g, " ").trim().slice(0, 60) : "";
+  }
+
+  // 兜底：新版页面把分享数据挂在 locals.mset 之外（window.yunData / 页面内联对象等），
+  // 直接按 "file_list":[{...}] 在全文中定位并配平取出，不依赖外层变量名。
+  function findInlinedFileList(html) {
+    const pattern = /["']?file_list["']?\s*:\s*/g;
+    let match;
+    while ((match = pattern.exec(html))) {
+      const valueStart = match.index + match[0].length;
+      if (html[valueStart] !== "[") continue;
+      const end = findJsonEnd(html, valueStart);
+      if (end < 0) continue;
+      try {
+        const list = JSON.parse(html.slice(valueStart, end));
+        if (Array.isArray(list) && list.length) return list;
+      } catch (_) {}
+      pattern.lastIndex = end;
+    }
+    return null;
+  }
+
+  // 兜底：从全文里捞一个数字型字段（shareid / share_uk）
+  function findNumericField(html, key) {
+    const match = html.match(new RegExp(`["']?${key}["']?\\s*:\\s*"?([0-9]{1,20})"?`));
+    return match ? Number(match[1]) : "";
+  }
+
+  // 提取码页：说明验证票据（BDCLND）没有生效，页面被打回了验证入口
+  function isPasscodePage(html) {
+    return typeof html === "string" && /请输入提取码/.test(html);
+  }
+
+  // 页面特征摘要：排查「读不到分享内容」时，先确认拿到的是什么页面
+  function describeSharePage(html) {
+    if (typeof html !== "string") return "分享页返回的不是网页内容";
+    const title = pageTitle(html);
+    const sizeKb = Math.max(1, Math.round(html.length / 1024));
+    const inlined = findInlinedFileList(html);
+    const segments = collectLocalsSegments(html).length;
+    return `分享页：${title || "无标题"}（${sizeKb} KB，文件列表 ${inlined ? inlined.length : 0} 项，内联数据 ${segments} 段）`;
+  }
+
+  // 解析不到分享数据时，按返回页面特征给出可执行的提示，而不是一律「页面结构已更新」
+  function diagnoseSharePage(html) {
+    const title = pageTitle(html);
+    const sizeKb = Math.max(1, Math.round(html.length / 1024));
+    if (/请输入提取码|提取码/.test(html)) return "分享需要提取码，或提取码不正确";
+    if (/页面不存在|你来晚了|已被取消|已删除|链接错误|分享已失效/.test(html)) {
+      return "分享不存在或已被取消，请确认链接是否仍然有效";
+    }
+    if (/wappass|百度安全验证|安全验证|验证码/.test(html)) {
+      return "百度要求安全验证，请在浏览器中打开该分享链接完成验证后再试";
+    }
+    if (/passport\.baidu\.com|请登录|登录百度账号/.test(html)) {
+      return "百度网盘登录状态可能已失效，请重新登录后重试";
+    }
+    return `无法解析分享页（返回页面标题「${title || "无"}」，${sizeKb} KB），链接可能已失效或百度页面结构已更新`;
+  }
+
+  // 从分享页 HTML 里抽出分享标识与文件列表（不校验完整性，供正常解析与兜底复用）
+  function readShareData(html) {
+    const segments = collectLocalsSegments(html);
+    const yunData = parseYunData(html);
+    // 优先选真正带文件列表的那一段；否则退到带分享标识的段
+    let shareData = null;
+    let fallback = null;
+    for (const segment of segments) {
+      const list = Array.isArray(segment.file_list) ? segment.file_list : null;
+      if (list && list.length) {
+        shareData = segment;
+        break;
+      }
+      if (!fallback && (segment.shareid || segment.share_uk)) fallback = segment;
+    }
+    if (!shareData && fallback) shareData = fallback;
+    // 文件列表可能根本不在内联段里（新版模板），退到全文搜索
+    let files = Array.isArray(shareData && shareData.file_list) ? shareData.file_list : [];
+    if (!files.length) files = findInlinedFileList(html) || [];
+    const shareId = (shareData && shareData.shareid) || (yunData && yunData.shareid) || findNumericField(html, "shareid");
+    const shareUk = (shareData && shareData.share_uk) || (yunData && yunData.share_uk) || findNumericField(html, "share_uk");
+    return {
+      segment: shareData,
+      shareId,
+      shareUk,
+      bdstoken: shareData && shareData.bdstoken,
+      files
+    };
+  }
+
+  function parseSharePage(html) {
+    if (html && typeof html === "object") {
+      const errno = Number(html.errno);
+      const message = html.show_msg || html.errmsg;
+      if (message) throw new BaiduPanError(message, { errno, response: html });
+      throw new BaiduPanError("分享页返回格式异常，请稍后重试", { response: html });
+    }
+    if (typeof html !== "string") {
+      throw new BaiduPanError("分享页返回格式异常，请稍后重试");
+    }
+    const { segment: shareData, shareId, shareUk, files } = readShareData(html);
+    if (!shareId || !shareUk) {
+      throw new BaiduPanError(diagnoseSharePage(html), { html });
+    }
+    if (!files.length) {
+      // 提取码页同样内联了 shareid/share_uk，但没有文件列表；此时提示提取码才有指导意义
+      if (/请输入提取码/.test(html)) {
+        throw new BaiduPanError("分享需要提取码，或提取码不正确", { html });
+      }
+      // 拿到分享标识但没内联文件列表：新版页面可能改为异步拉取，交由调用方用 /share/list 补齐
+      return {
+        userId: shareUk,
+        shareId,
+        bdstoken: shareData && shareData.bdstoken,
+        shareRoot: "",
+        directories: [],
+        files: [],
+        needsListing: true
+      };
     }
     return {
-      userId: data.share_uk,
-      shareId: data.shareid,
-      bdstoken: data.bdstoken,
+      userId: shareUk,
+      shareId,
+      bdstoken: shareData && shareData.bdstoken,
       shareRoot: files[0].parent_path || "/",
       directories: files
         .filter((item) => Number(item.isdir) === 1)
@@ -148,6 +325,11 @@
       this.shareRoot = "/";
       this.directories = [];
       this.files = [];
+      // 可选：由宿主（扩展后台）注入的 Cookie 写入能力，用于兜底保存分享验证票据
+      this.setShareCookie = typeof options.setShareCookie === "function" ? options.setShareCookie : null;
+      // 可选：遇到 errno -6 时由宿主修复登录 Cookie（跨站请求不携带 SameSite=Lax 凭证）
+      this.repairSession = typeof options.repairSession === "function" ? options.repairSession : null;
+      this.repairedSession = false;
     }
 
     progress(message) {
@@ -245,10 +427,28 @@
 
     async getBdstoken() {
       if (this.bdstoken) return this.bdstoken;
-      const data = await this.request("/api/gettemplatevariable", {
-        query: `fields=${encodeURIComponent('["bdstoken"]')}`,
-        checkErrno: true
-      });
+      let data;
+      try {
+        data = await this.request("/api/gettemplatevariable", {
+          query: `fields=${encodeURIComponent('["bdstoken"]')}`,
+          checkErrno: true
+        });
+      } catch (error) {
+        // errno -6 是百度的「未登录」。扩展后台是跨站请求，BDUSS 这类默认 SameSite=Lax
+        // 的凭证可能被浏览器拦下，先让宿主修复一次 cookie 再重试。
+        if (Number(error && error.errno) === -6) {
+          if (this.repairSession && !this.repairedSession) {
+            this.repairedSession = true;
+            let repaired = false;
+            try {
+              repaired = await this.repairSession();
+            } catch (_) {}
+            if (repaired) return this.getBdstoken();
+          }
+          throw new BaiduPanError("百度网盘登录状态已失效，请在浏览器登录网盘后重试", { errno: -6 });
+        }
+        throw error;
+      }
       this.bdstoken = data?.result?.bdstoken;
       if (!this.bdstoken) throw new BaiduPanError("未检测到百度网盘登录状态，请先登录");
       return this.bdstoken;
@@ -263,17 +463,106 @@
         checkErrno: true
       });
       if (!data.randsk) throw new BaiduPanError("提取码验证失败");
+      // 扩展后台是跨域 fetch，部分浏览器不会保存验证接口返回的 Set-Cookie，
+      // 这样后续 GET /s/... 会被打回提取码页，表现为「读取成功但拿不到文件列表」。
+      await this.persistShareCookie(data.randsk);
       return data.randsk;
+    }
+
+    // 主动写入分享票据 Cookie；写入失败时提示用户手动兜底
+    async persistShareCookie(randsk) {
+      if (!this.setShareCookie || !randsk) return;
+      try {
+        const written = await this.setShareCookie("BDCLND", randsk);
+        if (written === false) {
+          this.progress("⚠️ 未能写入分享验证 Cookie，如仍读取失败请先在浏览器中打开该分享页");
+        }
+      } catch (_) {}
     }
 
     async loadShare(input, password = "") {
       const shareKey = extractShareKey(input);
       if (!shareKey) throw new BaiduPanError("无法从输入内容中识别百度网盘分享链接");
       if (password) await this.verifyShare(shareKey, password);
-      const html = await this.request(`/s/1${shareKey}`);
-      const data = parseSharePage(html);
+      let html;
+      try {
+        html = await this.request(`/s/1${shareKey}`);
+      } catch (error) {
+        // 分享被取消或链接写错时百度直接返回 404 页，此时报「网络请求失败」会误导用户
+        if (/HTTP 404/.test(String(error && error.message))) {
+          throw new BaiduPanError("分享不存在或已被取消，请确认链接是否仍然有效");
+        }
+        throw error;
+      }
+      // 提取码页说明验证票据（BDCLND）没生效：扩展后台的跨域请求有时存不下
+      // 验证接口下发的 Set-Cookie。重新验证一次（同时主动写 cookie）再要一次页面。
+      if (password && isPasscodePage(html)) {
+        this.progress("分享页返回了提取码页，正在重新验证并重试…");
+        try {
+          await this.verifyShare(shareKey, password);
+          const retried = await this.request(`/s/1${shareKey}`);
+          if (!isPasscodePage(retried)) html = retried;
+        } catch (_) {}
+      }
+      this.progress(describeSharePage(html));
+      let data;
+      try {
+        data = parseSharePage(html);
+      } catch (error) {
+        data = await this.loadShareFallback(shareKey, error);
+      }
+      // 新版页面不含 bdstoken，直接 assign 会把 verifyShare 已取到的值覆盖成空，
+      // 导致后续请求全部丢 token，因此只在页面确实带了值时才更新。
+      if (data.bdstoken) this.bdstoken = data.bdstoken;
+      delete data.bdstoken;
       Object.assign(this, data);
+      if (data.needsListing) await this.listShareRoot();
       return data;
+    }
+
+    // 主页面认不出来时的兜底：提取码页同样内联了 shareid / share_uk，
+    // 拿到标识就能自己列目录，不必依赖页面里的 file_list
+    async loadShareFallback(shareKey, cause) {
+      let identity = null;
+      try {
+        const initHtml = await this.request(`/share/init?surl=${encodeURIComponent(shareKey)}`);
+        if (typeof initHtml === "string") identity = readShareData(initHtml);
+      } catch (_) {}
+      if (!identity || !identity.shareId || !identity.shareUk) throw cause;
+      return {
+        userId: identity.shareUk,
+        shareId: identity.shareId,
+        bdstoken: identity.bdstoken,
+        shareRoot: identity.files.length ? identity.files[0].parent_path || "" : "",
+        directories: [],
+        files: [],
+        needsListing: true
+      };
+    }
+
+    // 分享页没有内联文件列表时的兜底：主动列一次分享根目录（新版页面可能改为异步加载列表）
+    async listShareRoot() {
+      const candidates = [this.shareRoot, "/"].filter((value, index, list) => value && list.indexOf(value) === index);
+      let lastError = null;
+      for (const dir of candidates) {
+        try {
+          const children = await this.listShareDirectory(dir);
+          if (!children.length) continue;
+          this.shareRoot = dir;
+          this.directories = children.filter((item) => item.isDirectory);
+          this.files = children.filter((item) => !item.isDirectory);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (!this.isDirCandidateMiss(error)) throw error;
+        }
+      }
+      throw new BaiduPanError(
+        lastError
+          ? `无法读取分享目录（shareid=${this.shareId}）：${lastError.message}`
+          : "分享页没有可转存的文件，或分享已失效",
+        { errno: lastError && lastError.errno }
+      );
     }
 
     async listDestination(path) {
@@ -290,6 +579,7 @@
     async createDirectory(path) {
       if (!path) return;
       if (this.confirmedDirectories.has(path)) return;
+      if (!this.bdstoken) await this.getBdstoken();
       try {
         await this.listDestination(path);
         this.confirmedDirectories.add(path);
@@ -313,6 +603,8 @@
     }
 
     async transferIds(ids, destination, retry = 0) {
+      // 兜底：未取过 token 时先补（否则 URL 里会拼出 bdstoken=null，百度回 -6）
+      if (!this.bdstoken) await this.getBdstoken();
       const data = await this.request("/share/transfer", {
         method: "POST",
         query: [
@@ -383,7 +675,8 @@
     async listShareDirectory(dirValue, raw = false) {
       const dirParam = raw ? dirValue : encodePath(dirValue);
       const result = [];
-      for (let page = 1; ; page += 1) {
+      // 页数上限是防御性的：接口异常时若始终返回满页，for(;;) 会无限翻页把内存吃光
+      for (let page = 1; page <= 1000; page += 1) {
         const data = await this.request("/share/list", {
           query: [
             `uk=${encodeURIComponent(this.userId)}`,
@@ -416,6 +709,7 @@
         }
         if (list.length < 100) return result;
       }
+      return result;
     }
 
     // 计算分享内目录的路径候选（按可能性排序）；apiPath 为百度接口返回的权威 path
@@ -780,6 +1074,9 @@
       this.cancelled = false;
       this.progress("正在读取分享信息…");
       await this.loadShare(input, password);
+      // 读分享页不需要登录，转存却必须带 bdstoken；这里补一次，
+      // 否则 bdstoken=null 会让百度把请求判定为未登录（errno -6）。
+      await this.getBdstoken();
       const totalDirectories = this.directories.length;
       const totalFiles = this.files.length;
       const firstDir = this.directories[0];
@@ -818,6 +1115,13 @@
     extractShareKey,
     normalizeDestination,
     parseSharePage,
+    diagnoseSharePage,
+    describeSharePage,
+    isPasscodePage,
+    readShareData,
+    findJsonEnd,
+    collectLocalsSegments,
+    parseYunData,
     encodePath
   };
 });

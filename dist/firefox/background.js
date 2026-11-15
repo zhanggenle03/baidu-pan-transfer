@@ -62,7 +62,7 @@ async function report(message) {
 // 该情况已在 manifest 中修正，这里只作为 Cookie API 不可用时的备用路径，因此不做缓存（避免退出登录后仍报已登录）。
 async function detectLogin() {
   try {
-    await new BaiduPanTransfer({}).getBdstoken();
+    await new BaiduPanTransfer({ repairSession: repairSessionCookies }).getBdstoken();
     return "yes";
   } catch (error) {
     if (error && (error.errno === -6 || /未登录|未检测到百度网盘登录状态/.test(error.message || ""))) {
@@ -72,12 +72,67 @@ async function detectLogin() {
   }
 }
 
+// 主动写入分享票据 Cookie：MV3 后台是跨域 fetch，部分浏览器不会保存验证接口的
+// Set-Cookie（百度下发的 BDCLND 没有 SameSite 属性，跨站上下文会被丢弃），
+// 缺了它后续请求会被打回提取码页，所以验证成功后自己写一次并回报是否成功。
+async function setBaiduCookie(name, value) {
+  const base = { url: "https://pan.baidu.com/", name, value, path: "/" };
+  try {
+    const cookie = await call(ext.cookies, "set", { ...base, secure: true, sameSite: "no_restriction" });
+    if (cookie) return true;
+  } catch (_) {}
+  try {
+    const cookie = await call(ext.cookies, "set", { ...base, secure: true });
+    if (cookie) return true;
+  } catch (_) {}
+  try {
+    const cookie = await call(ext.cookies, "set", base);
+    if (cookie) return true;
+  } catch (_) {}
+  return false;
+}
+
+// 登录凭证的 SameSite 默认是 Lax，扩展后台发起的是跨站请求，浏览器不会携带，
+// 表现为「浏览器里明明已登录，接口却回 errno -6」。这里把它们改写成
+// SameSite=None; Secure（值不变），让扩展的请求也能带上；返回是否有改动供重试用。
+const SESSION_COOKIE_NAMES = ["BDUSS", "BDUSS_BFESS", "STOKEN", "PANWEB", "PANPSC"];
+
+async function repairSessionCookies() {
+  let list;
+  try {
+    list = await call(ext.cookies, "getAll", { domain: ".baidu.com" });
+  } catch (_) {
+    return false;
+  }
+  if (!Array.isArray(list) || !list.length) return false;
+  let changed = false;
+  for (const cookie of list) {
+    if (!SESSION_COOKIE_NAMES.includes(cookie.name)) continue;
+    if (cookie.secure && cookie.sameSite === "no_restriction") continue;
+    const details = {
+      domain: cookie.domain,
+      path: cookie.path || "/",
+      secure: true,
+      name: cookie.name,
+      value: cookie.value,
+      httpOnly: cookie.httpOnly,
+      sameSite: "no_restriction"
+    };
+    if (cookie.expirationDate) details.expirationDate = cookie.expirationDate;
+    try {
+      await call(ext.cookies, "set", details);
+      changed = true;
+    } catch (_) {}
+  }
+  return changed;
+}
+
 // 分享读取会话：展开子目录时复用已加载的分享状态，避免重复读取分享页
 let shareSession = null;
 
 async function getShareSession(url, password) {
   if (shareSession && shareSession.url === url && shareSession.password === password) return shareSession.transfer;
-  const transfer = new BaiduPanTransfer({});
+  const transfer = new BaiduPanTransfer({ setShareCookie: setBaiduCookie, repairSession: repairSessionCookies });
   await transfer.loadShare(url, password);
   shareSession = { transfer, url, password };
   return transfer;
@@ -112,6 +167,8 @@ async function startTransfer({ url, password, destination, maxFilesPerFolder, fo
       maxFilesPerFolder,
       folderPrefix,
       selection,
+      setShareCookie: setBaiduCookie,
+      repairSession: repairSessionCookies,
       onProgress: (message) => { progressQueue = progressQueue.then(() => report(message)); }
     });
     currentTransfer = transfer;
@@ -125,7 +182,12 @@ async function startTransfer({ url, password, destination, maxFilesPerFolder, fo
       await setState({ status: "cancelled", message: "已取消", updatedAt: Date.now() });
       await broadcast({ type: "TRANSFER_CANCELLED" });
     } else {
-      await setState({ status: "error", message: error.message, error: error.message, updatedAt: Date.now() });
+      const patch = { status: "error", message: error.message, error: error.message, updatedAt: Date.now() };
+      // 解析分享页失败时留一份页面片段，方便判断是登录页、验证页还是真的改版
+      if (error && typeof error.html === "string" && error.html) {
+        patch.sharePageSnippet = error.html.slice(0, 4000);
+      }
+      await setState(patch);
       await broadcast({ type: "TRANSFER_ERROR", error: error.message });
     }
   } finally {

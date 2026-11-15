@@ -50,7 +50,11 @@ async function queryActiveTab() {
 async function prefillFromActiveTab() {
   const shareUrl = shareLinkFromTab(await queryActiveTab());
   if (!shareUrl) return;
+  // 只有切到了另一个分享链接才重置提取码；同一个链接重新打开弹窗时保留用户已填的值，
+  // 否则「手动输入提取码」的分享会在重开弹窗后被清空，转存时缺少票据。
+  const changed = fields.url.value !== shareUrl;
   fields.url.value = shareUrl;
+  if (!changed) return;
   // 提取码以当前分享页为准：URL 里没有 pwd 就置空，绝不沿用上一次分享的提取码
   const pwd = shareUrl.match(/[?&]pwd=([^&#\s]+)/i);
   if (!pwd) {
@@ -266,18 +270,27 @@ async function readBaiduCookies() {
 }
 
 async function checkLogin() {
+  const notice = $("#login");
   try {
     const cookies = await readBaiduCookies();
-    if (cookies) {
-      // Cookie 是权威信号：BDUSS 存在即已登录，不存在即未登录
-      $("#login").classList.toggle("hidden", cookies.some((cookie) => cookie.name.includes("BDUSS")));
+    const hasBduss = Boolean(cookies && cookies.some((cookie) => cookie.name.includes("BDUSS")));
+    if (hasBduss) {
+      notice.classList.add("hidden");
       return;
     }
-    // 读不到 Cookie 时才退回后台接口探测，且只在明确未登录时提示
-    const result = await extCall(ext.runtime, "sendMessage", { type: "CHECK_LOGIN" });
-    $("#login").classList.toggle("hidden", result?.value !== "no");
+    // Cookie API 读不到 BDUSS 不等于是未登录（部分浏览器会限制扩展读取），
+    // 退回后台用接口复核；只有明确未登录时才提示，unknown 一律不打扰用户。
+    const result = await extCall(ext.runtime, "sendMessage", { type: "CHECK_LOGIN" }).catch(() => null);
+    if (result?.value !== "no") {
+      notice.classList.add("hidden");
+      return;
+    }
+    // 明确未登录：把读到的 Cookie 数量带上，便于区分「压根读不到」和「凭证缺失」
+    const detail = cookies ? `，已读取 ${cookies.length} 个百度 Cookie 但未找到登录凭证` : "";
+    notice.textContent = `未检测到百度账号登录状态${detail}。请先登录百度网盘。`;
+    notice.classList.remove("hidden");
   } catch (_) {
-    $("#login").classList.add("hidden");
+    notice.classList.add("hidden");
   }
 }
 

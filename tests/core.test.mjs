@@ -34,6 +34,188 @@ test("parseSharePage extracts files and directories", () => {
   assert.equal(result.files[0].path, "/share-root/file.txt");
 });
 
+test("parseSharePage survives }; inside string values", () => {
+  const payload = { share_uk: 10, shareid: 20, bdstoken: "t", file_list: [
+    { fs_id: 1, isdir: 0, server_filename: "a});b.txt", parent_path: "/root", path: "/root/a});b.txt" }
+  ]};
+  const result = parseSharePage(`<script>locals.mset(${JSON.stringify(payload)});</script>`);
+  assert.equal(result.files[0].name, "a});b.txt");
+});
+
+test("parseSharePage picks the segment carrying file_list", () => {
+  const login = { uk: 0, loginstate: 0, csrf: "abc" };
+  const share = { share_uk: 10, shareid: 20, bdstoken: "", file_list: [
+    { fs_id: 2, isdir: 0, server_filename: "f.txt", parent_path: "/root", path: "/root/f.txt" }
+  ]};
+  const html = `<script>locals.mset(${JSON.stringify(login)});locals.mset(${JSON.stringify(share)});</script>`;
+  const result = parseSharePage(html);
+  assert.equal(result.shareId, 20);
+  assert.equal(result.files[0].name, "f.txt");
+});
+
+// 新版分享页（登录态）真实结构：没有 locals.mset，yunData 里是模板占位，
+// 真实数据是一段裸 JSON。这里的占位符绝不能被当成 shareid。
+function newStyleShareHtml(list, extra = {}) {
+  const payload = {
+    uk: 0,
+    share_uk: "1103555597422",
+    shareid: 60800895343,
+    share_page_type: "multi",
+    file_list: list,
+    errno: 0,
+    ...extra
+  };
+  return `<!doctype html><html><head><title>百度网盘-分享文件</title></head><body>
+<script>window.yunData = {
+  skinName: data.skinName, neglect: 1, bdstoken: data.bdstoken, uk: data.uk,
+  loginstate: data.loginstate, share_uk: data.share_uk, shareid: data.shareid
+};</script>
+<script>${JSON.stringify(payload)}</script>
+</body></html>`;
+}
+
+test("new-style page ignores the placeholder yunData fields", () => {
+  const html = newStyleShareHtml([
+    { fs_id: 378678056104084, isdir: 1, server_filename: "LO", path: "/LO", parent_path: "" }
+  ]);
+  const result = parseSharePage(html);
+  assert.equal(Number(result.shareId), 60800895343, "占位符 data.shareid 不能被当成真实 shareid");
+  assert.equal(String(result.userId), "1103555597422");
+  assert.equal(result.directories[0].name, "LO");
+  assert.equal(result.shareRoot, "/", "新版根目录 parent_path 为空，应落到 /");
+});
+
+test("new-style page keeps the item path usable as a listing dir", async () => {
+  fastTimers();
+  const listDirs = [];
+  const html = newStyleShareHtml([
+    { fs_id: 378678056104084, isdir: 1, server_filename: "LO", path: "/LO", parent_path: "" }
+  ]);
+  const transfer = new BaiduPanTransfer({
+    destination: "/目标",
+    maxFilesPerFolder: 200,
+    requestDelay: 0,
+    fetch: async (url, options) => {
+      if (url.includes("/s/1abc")) return { ok: true, text: async () => html };
+      if (url.includes("/api/gettemplatevariable")) {
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, result: { bdstoken: "TOKEN" } }) };
+      }
+      if (url.includes("/share/list")) {
+        const dir = new URL(url).searchParams.get("dir");
+        listDirs.push(dir);
+        if (dir === "/LO") {
+          return { ok: true, text: async () => JSON.stringify({ errno: 0, list: [
+            { fs_id: 11, server_filename: "a.txt", isdir: 0, path: "/LO/a.txt" }
+          ]}) };
+        }
+        return { ok: true, text: async () => JSON.stringify({ errno: 2, show_msg: "啊哦，链接出错了" }) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ errno: 0 }) };
+    }
+  });
+  await transfer.run("https://pan.baidu.com/s/1abc", "");
+  assert.ok(listDirs.includes("/LO"), "应直接用 item.path 作为目录参数，而不是猜 /");
+  assert.equal(transfer.shareRoot, "/");
+});
+
+test("parseSharePage finds the file list outside locals.mset", () => {
+  const list = [{ fs_id: 1, isdir: 0, server_filename: "x.txt", parent_path: "/root", path: "/root/x.txt" }];
+  const html = `<title>百度网盘-分享文件</title><script>window.__SHARE__={"shareid":123,"share_uk":456,"file_list":${JSON.stringify(list)}};</script>`;
+  const result = parseSharePage(html);
+  assert.equal(result.shareId, 123);
+  assert.equal(result.userId, 456);
+  assert.equal(result.files[0].name, "x.txt");
+  assert.equal(result.shareRoot, "/root");
+});
+
+test("parseSharePage falls back to window.yunData when the list is not inlined", () => {
+  const html = `<script>window.yunData={skinName:'white', bdstoken:'', uk:'0', loginstate:'0', share_uk:"3745848801", shareid:"64021785283"};</script>`;
+  const result = parseSharePage(html);
+  assert.equal(result.userId, "3745848801");
+  assert.equal(result.shareId, "64021785283");
+  assert.equal(result.needsListing, true);
+  assert.equal(result.files.length, 0);
+});
+
+test("passcode page reports a passcode problem instead of an invalid share", () => {
+  const payload = { csrf: "x", uk: 0, share_uk: "10", shareid: "20" };
+  const html = `<title>百度网盘 请输入提取码</title><script>locals.mset(${JSON.stringify(payload)});</script>`;
+  assert.throws(() => parseSharePage(html), /分享需要提取码/);
+});
+
+test("missing share page reports an expired share", () => {
+  const html = "<title>页面不存在</title><div>你访问的页面不存在</div>";
+  assert.throws(() => parseSharePage(html), /分享不存在或已被取消/);
+});
+
+test("captcha page reports a verification problem", () => {
+  const html = "<title>百度安全验证</title><script src=\"https://wappass.baidu.com/static/captcha/tuxing.js\"></script>";
+  assert.throws(() => parseSharePage(html), /安全验证/);
+});
+
+test("loadShare turns an HTTP 404 into a friendly expired-share error", async () => {
+  const transfer = new BaiduPanTransfer({
+    fetch: async () => ({ ok: false, status: 404, text: async () => "<title>页面不存在</title>" })
+  });
+  await assert.rejects(() => transfer.loadShare("https://pan.baidu.com/s/1abc"), /分享不存在或已被取消/);
+});
+
+test("loadShare lists the root when the page has no inlined file list", async () => {
+  const transfer = new BaiduPanTransfer({
+    fetch: async (url) => {
+      if (url.includes("/s/1abc")) {
+        return { ok: true, text: async () => `<script>window.yunData={share_uk:"10", shareid:"20"};</script>` };
+      }
+      if (url.includes("/share/list")) {
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, list: [
+          { fs_id: 7, server_filename: "root-dir", isdir: 1 },
+          { fs_id: 8, server_filename: "root.txt", isdir: 0 }
+        ]}) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ errno: 0 }) };
+    }
+  });
+  const data = await transfer.loadShare("https://pan.baidu.com/s/1abc");
+  assert.equal(data.needsListing, true);
+  assert.equal(transfer.directories[0].name, "root-dir");
+  assert.equal(transfer.files[0].name, "root.txt");
+});
+
+test("loadShare recovers the share identity from the passcode page", async () => {
+  const transfer = new BaiduPanTransfer({
+    fetch: async (url) => {
+      if (url.includes("/s/1abc")) {
+        return { ok: true, text: async () => "<title>百度网盘</title><body>加载中</body>" };
+      }
+      if (url.includes("/share/init")) {
+        return { ok: true, text: async () => `<script>locals.mset(${JSON.stringify({ uk: 0, share_uk: "10", shareid: "20" })});</script>` };
+      }
+      if (url.includes("/share/list")) {
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, list: [{ fs_id: 7, server_filename: "dir", isdir: 1 }] }) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ errno: 0 }) };
+    }
+  });
+  const data = await transfer.loadShare("https://pan.baidu.com/s/1abc");
+  assert.equal(data.shareId, "20");
+  assert.equal(transfer.directories[0].name, "dir");
+});
+
+test("verifyShare persists the randsk cookie when the host provides a writer", async () => {
+  const written = [];
+  const transfer = new BaiduPanTransfer({
+    setShareCookie: async (name, value) => { written.push([name, value]); },
+    fetch: async (url) => {
+      if (url.includes("/api/gettemplatevariable")) {
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, result: { bdstoken: "t" } }) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ errno: 0, randsk: "RANDSK" }) };
+    }
+  });
+  await transfer.verifyShare("abc", "1234");
+  assert.deepEqual(written, [["BDCLND", "RANDSK"]]);
+});
+
 test("transferIds retries rate limits and encodes destination", async () => {
   const responses = [{ errno: 111 }, { errno: 0 }];
   const calls = [];
@@ -652,4 +834,78 @@ test("deep share listing chains child paths and uses one request per level", asy
   assert.equal(level3[0].path, "/share-root/A/B/C/leaf.txt");
   assert.equal(afterLevel2 - afterLevel1, 1, "第二层应一次命中，不再试错");
   assert.equal(calls.length - afterLevel2, 1, "第三层应一次命中，不再试错");
+});
+
+test("loadShare keeps the token fetched during verification when the page has none", async () => {
+  const transfer = new BaiduPanTransfer({
+    setShareCookie: async () => true,
+    fetch: async (url) => {
+      if (url.includes("/api/gettemplatevariable")) {
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, result: { bdstoken: "TOKEN" } }) };
+      }
+      if (url.includes("/share/verify")) {
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, randsk: "R" }) };
+      }
+      if (url.includes("/s/1abc")) {
+        return { ok: true, text: async () => newStyleShareHtml([
+          { fs_id: 9, isdir: 1, server_filename: "LO", path: "/LO", parent_path: "" }
+        ]) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ errno: 0 }) };
+    }
+  });
+  await transfer.loadShare("https://pan.baidu.com/s/1abc", "m817");
+  assert.equal(transfer.bdstoken, "TOKEN", "页面没带 bdstoken 时不应覆盖验证阶段取到的值");
+});
+
+test("run fetches a bdstoken before transferring when no passcode was needed", async () => {
+  fastTimers();
+  const urls = [];
+  const transfer = new BaiduPanTransfer({
+    destination: "/目标",
+    maxFilesPerFolder: 0,
+    requestDelay: 0,
+    fetch: async (url) => {
+      urls.push(url);
+      if (url.includes("/s/1abc")) {
+        return { ok: true, text: async () => newStyleShareHtml([
+          { fs_id: 9, isdir: 1, server_filename: "LO", path: "/LO", parent_path: "" }
+        ]) };
+      }
+      if (url.includes("/api/gettemplatevariable")) {
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, result: { bdstoken: "TOKEN" } }) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ errno: 0 }) };
+    }
+  });
+  await transfer.run("https://pan.baidu.com/s/1abc", "");
+  assert.ok(urls.some((url) => url.includes("/api/gettemplatevariable")), "转存前应主动取 bdstoken");
+  assert.ok(!urls.some((url) => url.includes("bdstoken=null")), "不应把 null 拼进请求，否则百度回 -6");
+});
+
+test("getBdstoken repairs session cookies and retries after errno -6", async () => {
+  let calls = 0;
+  let repaired = 0;
+  const transfer = new BaiduPanTransfer({
+    repairSession: async () => { repaired += 1; return true; },
+    fetch: async (url) => {
+      if (url.includes("/api/gettemplatevariable")) {
+        calls += 1;
+        if (calls === 1) return { ok: true, text: async () => JSON.stringify({ errno: -6, result: [] }) };
+        return { ok: true, text: async () => JSON.stringify({ errno: 0, result: { bdstoken: "TOKEN" } }) };
+      }
+      return { ok: true, text: async () => JSON.stringify({ errno: 0 }) };
+    }
+  });
+  const token = await transfer.getBdstoken();
+  assert.equal(token, "TOKEN", "修复 cookie 后应重试并拿到 token");
+  assert.equal(repaired, 1);
+});
+
+test("getBdstoken reports a login failure when repair does not help", async () => {
+  const transfer = new BaiduPanTransfer({
+    repairSession: async () => true,
+    fetch: async () => ({ ok: true, text: async () => JSON.stringify({ errno: -6, result: [] }) })
+  });
+  await assert.rejects(() => transfer.getBdstoken(), /登录状态已失效/);
 });
